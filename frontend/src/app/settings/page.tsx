@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { AuthDownloadLink } from "@/components/auth-download-link";
 import { apiClient } from "@/lib/api-client";
-import { AccountingMode, AuditLog, BackupItem } from "@/types/accounting";
+import { AccountingMode, AuditLog } from "@/types/accounting";
 import { useOrg } from "@/lib/org-context";
 import { NewOrgModal } from "@/components/new-org-modal";
+import { IntegrationsSection } from "@/components/settings/integrations-section";
+import { BackupSection } from "@/components/settings/backup-section";
+import { DangerZoneSection } from "@/components/settings/danger-zone-section";
 import {
   Building2,
   Layers,
@@ -20,19 +22,8 @@ import {
   History,
   Calendar,
   ShieldAlert,
-  Database,
-  Radio,
-  Download,
-  FileCheck,
-  RefreshCw,
-  Server,
-  Zap,
-  Trash2,
-  AlertTriangle,
   Plus,
   ArrowRightLeft,
-  AlertOctagon,
-  RotateCcw,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -43,9 +34,6 @@ export default function SettingsPage() {
     toggleMode,
     lockPeriod,
     currentRole,
-    resetOrgData,
-    factoryReset,
-    refreshOrganizations,
   } = useOrg();
   const isChief = currentRole === "CHIEF_ACCOUNTANT";
   const [mode, setMode] = useState<AccountingMode>(currentOrg?.mode || "SIMPLE");
@@ -55,12 +43,6 @@ export default function SettingsPage() {
   // Organization modal state
   const [isNewOrgModalOpen, setIsNewOrgModalOpen] = useState(false);
 
-  // Danger Zone state
-  const [orgResetLoading, setOrgResetLoading] = useState(false);
-  const [showFactoryModal, setShowFactoryModal] = useState(false);
-  const [factoryConfirmText, setFactoryConfirmText] = useState("");
-  const [factoryResetLoading, setFactoryResetLoading] = useState(false);
-  const [dangerMessage, setDangerMessage] = useState<string | null>(null);
 
   // Period locking state
   const [lockDate, setLockDate] = useState<string>(currentOrg?.locked_until_date || "");
@@ -69,17 +51,7 @@ export default function SettingsPage() {
   // Audit logs state
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
-  // Integrations state (Didox & Soliq)
-  const [didoxToken, setDidoxToken] = useState<string>("");
-  const [soliqNkm, setSoliqNkm] = useState<string>("");
-  const [didoxLoading, setDidoxLoading] = useState(false);
-  const [soliqLoading, setSoliqLoading] = useState(false);
-  const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
 
-  // Backup Engine state
-  const [backups, setBackups] = useState<BackupItem[]>([]);
-  const [backupLoading, setBackupLoading] = useState(false);
-  const [backupMessage, setBackupMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (currentOrg) {
@@ -88,7 +60,6 @@ export default function SettingsPage() {
         setLockDate(currentOrg.locked_until_date);
       }
       fetchAuditLogs();
-      fetchBackups();
     }
   }, [currentOrg]);
 
@@ -102,14 +73,6 @@ export default function SettingsPage() {
     }
   };
 
-  const fetchBackups = async () => {
-    try {
-      const list = await apiClient.listBackups();
-      setBackups(list);
-    } catch (err) {
-      console.error("Backuplarni yuklab bo'lmadi:", err);
-    }
-  };
 
   const handleSaveLock = async () => {
     if (!currentOrg || !lockDate) return;
@@ -154,126 +117,8 @@ export default function SettingsPage() {
     }
   };
 
-  // Stage 3 Handlers: Didox & Soliq Sync
-  const handleSyncDidox = async () => {
-    if (!currentOrg) return;
-    setDidoxLoading(true);
-    setSyncStatusMsg(null);
-    try {
-      const res = await apiClient.syncDidox({
-        organization_id: currentOrg.id,
-        api_token: didoxToken || undefined,
-      });
-      setSyncStatusMsg(`Didox sinxronlandi: ${res.synced_count} ta faktura (${res.total_amount.toLocaleString()} so'm) bazaga kiritildi.`);
-      await fetchAuditLogs();
-    } catch (err: any) {
-      setSyncStatusMsg(`Didox xatosi: ${err.message}`);
-    } finally {
-      setDidoxLoading(false);
-    }
-  };
 
-  const handleSyncSoliq = async () => {
-    if (!currentOrg) return;
-    setSoliqLoading(true);
-    setSyncStatusMsg(null);
-    try {
-      const res = await apiClient.syncSoliq({
-        organization_id: currentOrg.id,
-        nkm_serial: soliqNkm || undefined,
-      });
-      setSyncStatusMsg(`Soliq.uz OFD sinxronlandi: ${res.synced_count} ta kassa reyestri (${res.total_amount.toLocaleString()} so'm) kiritildi.`);
-      await fetchAuditLogs();
-    } catch (err: any) {
-      setSyncStatusMsg(`Soliq.uz xatosi: ${err.message}`);
-    } finally {
-      setSoliqLoading(false);
-    }
-  };
 
-  // Stage 3 Handlers: Backup Engine
-  const handleCreateBackup = async () => {
-    if (!currentOrg || !isChief) return;
-    setBackupLoading(true);
-    setBackupMessage(null);
-    try {
-      const res = await apiClient.createBackup(currentOrg.id);
-      setBackupMessage(`Muvaffaqiyatli: ${res.filename} (${res.size_kb} KB, ${res.transactions_count} ta tranzaksiya) saqlandi.`);
-      await fetchBackups();
-      await fetchAuditLogs();
-    } catch (err: any) {
-      setBackupMessage(`Xatolik: ${err.message}`);
-    } finally {
-      setBackupLoading(false);
-    }
-  };
-
-  const handleVerifyBackup = async (filename: string) => {
-    try {
-      const res = await apiClient.verifyBackup(filename);
-      alert(`✅ Zaxira butunligi tasdiqlandi!\n\nFayl: ${res.filename}\nSHA256: ${res.actual_checksum}\nTranzaksiyalar soni: ${res.stats?.transactions || 0}`);
-    } catch (err: any) {
-      alert(`❌ Xatolik: ${err.message}`);
-    }
-  };
-
-  const handleRestoreBackup = async (filename: string) => {
-    if (!isChief) return;
-    const confirmation = window.prompt(
-      `DIQQAT! "${filename}" zaxirasidagi tashkilot(lar)ning joriy ma'lumotlari zaxira holati bilan almashtiriladi.\n` +
-        "Joriy holat avval avtomatik zaxiralanadi.\n\nDavom etish uchun TIKLASH deb yozing:"
-    );
-    if (!confirmation) return;
-    setBackupMessage(null);
-    try {
-      const res = await apiClient.restoreBackup(filename, confirmation);
-      setBackupMessage(`${res.message} Oldingi holat saqlandi: ${res.pre_restore_backup}`);
-      await refreshOrganizations();
-      await fetchBackups();
-      await fetchAuditLogs();
-    } catch (err: any) {
-      setBackupMessage(`Xatolik: ${err.message}`);
-    }
-  };
-
-  const handleResetCurrentOrg = async () => {
-    if (!currentOrg || !isChief) return;
-    const confirmed = window.confirm(
-      `DIQQAT! "${currentOrg.name}" tashkilotining barcha tranzaksiyalari, tovarlari, kontragentlari va hujjatlari butunlay o'chiriladi!\n\nTashkilot hisobini noldan tozalashni tasdiqlaysizmi?`
-    );
-    if (!confirmed) return;
-    setOrgResetLoading(true);
-    setDangerMessage(null);
-    try {
-      await resetOrgData(currentOrg.id);
-      setDangerMessage(`"${currentOrg.name}" hisob ma'lumotlari muvaffaqiyatli tozalandi (0 ga tushirildi).`);
-      await fetchAuditLogs();
-    } catch (err: any) {
-      alert(err.message || "Tashkilot ma'lumotlarini tozalashda xatolik yuz berdi");
-    } finally {
-      setOrgResetLoading(false);
-    }
-  };
-
-  const handleFactoryReset = async () => {
-    if (!isChief) return;
-    if (factoryConfirmText.trim() !== "TOZALASH") {
-      alert("Iltimos, tasdiqlash uchun 'TOZALASH' so'zini to'g'ri kiriting!");
-      return;
-    }
-    setFactoryResetLoading(true);
-    try {
-      await factoryReset("TOZALASH");
-      setShowFactoryModal(false);
-      setFactoryConfirmText("");
-      alert("Tizim to'liq nollashtirildi va standart BHMS hisoblar rejasi qayta tiklandi!");
-      window.location.reload();
-    } catch (err: any) {
-      alert(err.message || "Tizimni tozalashda xatolik yuz berdi");
-    } finally {
-      setFactoryResetLoading(false);
-    }
-  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
@@ -592,182 +437,11 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* STAGE 3 FEATURE: External API Integrations (Didox & Soliq) */}
-      <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-5">
-        <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
-          <div className="w-10 h-10 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center font-bold shrink-0">
-            <Radio className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">
-              Tashqi Tizim Integratsiyalari (Didox.uz & Soliq.uz Direct API)
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Fayllarni qo&apos;lda yuklamasdan, to&apos;g&apos;ridan-to&apos;g&apos;ri Didox va Soliq.uz OFD bilan avtomatlashtirilgan sinxronizatsiya
-            </p>
-          </div>
-        </div>
+      <IntegrationsSection onActivity={fetchAuditLogs} />
 
-        {syncStatusMsg && (
-          <div className="p-3.5 rounded-2xl bg-blue-50 border border-blue-200 text-xs text-blue-900 font-semibold flex items-center gap-2">
-            <Zap className="w-4 h-4 text-blue-600 shrink-0" />
-            <span>{syncStatusMsg}</span>
-          </div>
-        )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Didox Card */}
-          <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800">Didox.uz EHF Shlyuzi</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                ULANDI (v2.0)
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 leading-snug">
-              Elektron hisob-fakturalar va ishonchnomalarni avtomatik qabul qilib, schotlar rejasiga (2900/6000) o&apos;tkazadi.
-            </p>
-            <input
-              type="password"
-              placeholder="Didox API Kalit / Token (ixtiyoriy)..."
-              value={didoxToken}
-              onChange={(e) => setDidoxToken(e.target.value)}
-              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
-            />
-            <button
-              onClick={handleSyncDidox}
-              disabled={didoxLoading}
-              className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${didoxLoading ? "animate-spin" : ""}`} />
-              <span>{didoxLoading ? "Didox sinxronlanmoqda..." : "Didox Fakturalarini Sinxronlash"}</span>
-            </button>
-          </div>
+      <BackupSection onActivity={fetchAuditLogs} />
 
-          {/* Soliq.uz Card */}
-          <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800">Soliq.uz Fiskal Operator (OFD)</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                ONLAYN (NKM)
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 leading-snug">
-              Onlayn kassa cheklari va virtual kassa Z-hisobotlarini tushum daromadlariga (5000/9000) yozadi.
-            </p>
-            <input
-              type="text"
-              placeholder="Onlayn-NKM seriya raqami..."
-              value={soliqNkm}
-              onChange={(e) => setSoliqNkm(e.target.value)}
-              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
-            />
-            <button
-              onClick={handleSyncSoliq}
-              disabled={soliqLoading}
-              className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${soliqLoading ? "animate-spin" : ""}`} />
-              <span>{soliqLoading ? "Kassa sinxronlanmoqda..." : "Kassa Cheklarini Sinxronlash"}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* STAGE 3 FEATURE: Automated Database Backup & Disaster Recovery */}
-      <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
-              <Database className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                Avtomatlashtirilgan Zaxira Nusxalar (Automated Backup & Recovery)
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Barcha buxgalteriya yozuvlarining kriptografik SHA256 nazorat summasi bilan himoyalangan zaxira nusxalari
-              </p>
-            </div>
-          </div>
-
-          <button
-            onClick={handleCreateBackup}
-            disabled={backupLoading || !isChief}
-            title={!isChief ? "Faqat Bosh buxgalter zaxira nusxa yarata oladi" : ""}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all flex items-center justify-center gap-1.5 ${
-              !isChief
-                ? "bg-slate-200 text-slate-400 cursor-not-allowed shadow-none"
-                : "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer"
-            }`}
-          >
-            <Server className={`w-3.5 h-3.5 ${backupLoading ? "animate-spin" : ""}`} />
-            <span>{backupLoading ? "Nusxalanmoqda..." : "Yangi zaxira yaratish (SHA256)"}</span>
-          </button>
-        </div>
-
-        {backupMessage && (
-          <div className="p-3.5 rounded-2xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-900 font-semibold">
-            {backupMessage}
-          </div>
-        )}
-
-        {backups.length === 0 ? (
-          <p className="text-xs text-slate-400 py-3 text-center">Hali zaxira nusxalar mavjud emas</p>
-        ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-            {backups.map((b) => (
-              <div
-                key={b.filename}
-                className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-slate-800 text-[11px]">{b.filename}</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-200 text-slate-600">
-                      {b.size_kb} KB
-                    </span>
-                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
-                      {b.stats?.transactions || 0} ta tranzaksiya
-                    </span>
-                  </div>
-                  <p className="text-[10px] font-mono text-slate-500 truncate max-w-md">
-                    SHA256: {b.checksum_sha256}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => handleVerifyBackup(b.filename)}
-                    className="px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
-                  >
-                    <FileCheck className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Tekshirish</span>
-                  </button>
-
-                  <AuthDownloadLink
-                    href={apiClient.getBackupDownloadUrl(b.filename)}
-                    className="px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 text-[11px] font-medium flex items-center gap-1 transition-colors"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Yuklab olish</span>
-                  </AuthDownloadLink>
-
-                  <button
-                    onClick={() => handleRestoreBackup(b.filename)}
-                    disabled={!isChief}
-                    title={!isChief ? "Faqat Bosh buxgalter zaxiradan tiklay oladi" : "Ma'lumotlarni shu zaxira holatiga qaytarish"}
-                    className="px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed text-amber-800 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Tiklash</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* Versioned Tax Rules Engine Card */}
       <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
@@ -862,87 +536,8 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* STAGE 3 FEATURE: Danger Zone (Data reset & Factory Reset) */}
-      <div className="bg-rose-50/40 rounded-3xl border-2 border-rose-200 p-6 shadow-xs space-y-5">
-        <div className="flex items-center gap-3 border-b border-rose-200/60 pb-4">
-          <div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center font-bold shrink-0">
-            <AlertOctagon className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-rose-950">
-              Xavfli Hudud: Ma&apos;lumotlarni Tozalash (Danger Zone)
-            </h3>
-            <p className="text-xs text-rose-700/80 mt-0.5">
-              Bazani noldan tozalash va alohida tashkilot hisob-kitoblarini qayta nollashtirish
-            </p>
-          </div>
-        </div>
+      <DangerZoneSection onActivity={fetchAuditLogs} />
 
-        {dangerMessage && (
-          <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-semibold flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>{dangerMessage}</span>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Card 1: Reset active org data */}
-          <div className="p-5 rounded-2xl bg-white border border-rose-200 shadow-2xs space-y-3 flex flex-col justify-between">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-rose-700 font-bold text-xs">
-                <Trash2 className="w-4 h-4" />
-                <span>Tanlangan Tashkilotni Tozalash</span>
-              </div>
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                Faqat hozirda tanlangan <strong className="text-slate-900">&quot;{currentOrg?.name}&quot;</strong> tashkilotining barcha operatsiyalari, tovarlari, kontragentlari va hujjatlarini o&apos;chiradi. Tashkilotning o&apos;zi va boshqa korxonalar ma&apos;lumotlariga tegilmaydi.
-              </p>
-            </div>
-
-            <button
-              onClick={handleResetCurrentOrg}
-              disabled={orgResetLoading || !isChief || !currentOrg}
-              title={!isChief ? "Faqat Bosh buxgalter ma'lumotlarni tozalay oladi" : ""}
-              className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-all ${
-                !isChief || !currentOrg
-                  ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                  : "bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-rose-600/20"
-              }`}
-            >
-              <Trash2 className={`w-3.5 h-3.5 ${orgResetLoading ? "animate-spin" : ""}`} />
-              <span>
-                {orgResetLoading ? "Tozalanmoqda..." : `"${currentOrg?.name?.slice(0, 15)}..." ni nollashtirish`}
-              </span>
-            </button>
-          </div>
-
-          {/* Card 2: System Factory Reset */}
-          <div className="p-5 rounded-2xl bg-white border border-rose-200 shadow-2xs space-y-3 flex flex-col justify-between">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-rose-800 font-bold text-xs">
-                <AlertTriangle className="w-4 h-4" />
-                <span>Tizimni Noldan Tozalash (Factory Reset)</span>
-              </div>
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                Butun tizim bazasini to&apos;liq nollashtiradi: barcha tashkilotlar, operatsiyalar va jurnallar o&apos;chiriladi. BHMS standart schotlar rejasi va bitta toza boshlang&apos;ich korxona qayta yaratiladi.
-              </p>
-            </div>
-
-            <button
-              onClick={() => setShowFactoryModal(true)}
-              disabled={!isChief}
-              title={!isChief ? "Faqat Bosh buxgalter tizimni tozalay oladi" : ""}
-              className={`w-full py-2.5 px-3 rounded-xl text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-all ${
-                !isChief
-                  ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                  : "bg-slate-900 hover:bg-black text-rose-400 cursor-pointer"
-              }`}
-            >
-              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-              <span>Butun Bazani Noldan Tozalash</span>
-            </button>
-          </div>
-        </div>
-      </div>
 
       {/* System Launch Animation Showcase Card */}
       <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
@@ -975,64 +570,6 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Factory Reset Confirmation Modal */}
-      {showFactoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-4">
-          <div className="bg-slate-900 border border-rose-500/50 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95">
-            <div className="flex items-center gap-3 text-rose-500">
-              <div className="w-10 h-10 rounded-xl bg-rose-500/20 flex items-center justify-center font-bold shrink-0">
-                <AlertOctagon className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white">
-                  Tizimni To&apos;liq Nollashtirish (Factory Reset)
-                </h3>
-                <p className="text-[11px] text-rose-300">
-                  Ushbu amalni ortga qaytarib bo&apos;lmaydi!
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-xs text-rose-200 leading-relaxed space-y-2">
-              <p>
-                Barcha tashkilotlar, bank ko&apos;chirmalari, tovarlar, kontragentlar va audit jurnallari o&apos;chiriladi.
-              </p>
-              <p className="font-semibold text-rose-100">
-                Tasdiqlash uchun quyidagi maydonga katta harflar bilan <span className="underline font-mono text-yellow-400">TOZALASH</span> so&apos;zini yozing:
-              </p>
-            </div>
-
-            <input
-              type="text"
-              placeholder="TOZALASH"
-              value={factoryConfirmText}
-              onChange={(e) => setFactoryConfirmText(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-950 border border-rose-500/40 rounded-xl text-center font-mono font-bold tracking-widest text-sm text-yellow-400 outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400"
-            />
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowFactoryModal(false);
-                  setFactoryConfirmText("");
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition cursor-pointer"
-              >
-                Bekor qilish
-              </button>
-              <button
-                type="button"
-                onClick={handleFactoryReset}
-                disabled={factoryConfirmText.trim() !== "TOZALASH" || factoryResetLoading}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-600/30 transition cursor-pointer"
-              >
-                {factoryResetLoading ? "Tozalanmoqda..." : "Ha, butunlay tozalansin"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* New Organization Modal */}
       <NewOrgModal
