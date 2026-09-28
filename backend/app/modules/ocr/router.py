@@ -1,5 +1,6 @@
 import base64
 import uuid
+from decimal import Decimal
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,7 @@ from app.core.auth import ensure_org_access, get_current_user
 from app.core.rbac import UserRole, require_roles
 from app.models.user import User
 from app.core.database import get_db
+from app.services.import_guard import commit_or_conflict, ensure_not_duplicate, fingerprint, record_import
 from app.modules.accounting.services import AccountingService
 from app.modules.accounting.schemas import TransactionCreate
 from app.modules.ocr.image_enhancer import pdf_to_enhanced_images, image_bytes_to_enhanced, cv2_to_png_bytes
@@ -23,6 +25,8 @@ class CommitOCRRequest(BaseModel):
     document: ExtractedDocument
     debit_account: Optional[str] = "2900"
     credit_account: Optional[str] = "6000"
+    # Re-book a document this organization already committed (otherwise rejected with 409)
+    allow_duplicate: bool = False
 
 @router.post("/upload-and-parse")
 async def upload_and_parse_scanned_document(
@@ -86,6 +90,13 @@ async def commit_ocr_document(
     accounting_service = AccountingService(db)
     doc = payload.document
 
+    # Every line is part of the fingerprint, so different receipts without a number do not collide
+    doc_fingerprint = fingerprint(
+        "OCR", doc.doc_type, doc.doc_number, doc.supplier_inn, doc.doc_date,
+        *[f"{li.item_name}|{li.ikpu_code}|{li.quantity}|{li.price}|{li.total_amount}" for li in doc.line_items],
+    )
+    await ensure_not_duplicate(db, payload.organization_id, doc_fingerprint, payload.allow_duplicate)
+
     # 1. Resolve or create counterparty
     counterparty = None
     if doc.supplier_name:
@@ -126,6 +137,13 @@ async def commit_ocr_document(
         )
         tx = await accounting_service.record_transaction(tx_create)
         created_txs.append(str(tx.id))
+
+    await record_import(
+        db, payload.organization_id, filename=f"OCR {doc.doc_type} {doc.doc_number or ''}".strip(),
+        document_type="OCR", digest=doc_fingerprint, rows_committed=len(created_txs),
+        metadata={"supplier_inn": doc.supplier_inn}, allow_duplicate=payload.allow_duplicate,
+    )
+    await commit_or_conflict(db)
 
     return {
         "success": True,

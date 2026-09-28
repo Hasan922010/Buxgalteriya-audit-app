@@ -6,6 +6,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.schemas.report import TrialBalanceReport, MaterialReport, AktSverkaReport
+from app.services.excel_safety import neutralize_formula_injection
 
 class ExcelExportEngine:
     """
@@ -138,6 +139,7 @@ class ExcelExportEngine:
 
         cls._apply_styles(ws, freeze_cell="A6")
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output
@@ -381,6 +383,7 @@ class ExcelExportEngine:
             cls._apply_styles(ws_mxik, freeze_cell="A6")
 
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output
@@ -486,6 +489,7 @@ class ExcelExportEngine:
 
         cls._apply_styles(ws, freeze_cell="A6")
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output

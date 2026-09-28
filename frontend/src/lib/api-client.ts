@@ -33,6 +33,30 @@ async function errorFrom(res: Response, fallback: string): Promise<Error> {
   return new Error(err.detail || fallback);
 }
 
+/**
+ * POSTs a commit request. On 409 (document already imported) asks the user and,
+ * only if they confirm, retries with allow_duplicate=true.
+ */
+export async function postCommit(url: string, payload: Record<string, unknown>, fallback: string): Promise<Response> {
+  const send = (body: Record<string, unknown>) =>
+    authFetch(url, {
+      method: "POST",
+      headers: getHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+
+  let res = await send(payload);
+  if (res.status === 409) {
+    const err = await res.json().catch(() => ({}));
+    const message = err.detail || "Bu hujjat allaqachon import qilingan";
+    const confirmed = typeof window !== "undefined" && window.confirm(`${message}\n\nBaribir qayta import qilinsinmi?`);
+    if (!confirmed) throw new Error(message);
+    res = await send({ ...payload, allow_duplicate: true });
+  }
+  if (!res.ok) throw await errorFrom(res, fallback);
+  return res;
+}
+
 export const apiClient = {
   // Authentication
   async login(username: string, password: string): Promise<LoginResponse> {
@@ -310,15 +334,7 @@ export const apiClient = {
     default_debit_account?: string;
     default_credit_account?: string;
   }) {
-    const res = await authFetch(`${API_BASE}/documents/commit`, {
-      method: "POST",
-      headers: getHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Amallarni bazaga kiritib bo'lmadi");
-    }
+    const res = await postCommit(`${API_BASE}/documents/commit`, payload, "Amallarni bazaga kiritib bo'lmadi");
     appCache.invalidateTags(["reports", "kpis", "organizations"]);
     return res.json();
   },
@@ -333,15 +349,7 @@ export const apiClient = {
     default_debit_account?: string;
     default_credit_account?: string;
   }): Promise<AsyncCommitResponse> {
-    const res = await authFetch(`${API_BASE}/documents/commit-async`, {
-      method: "POST",
-      headers: getHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Asinxron importni boshlab bo'lmadi");
-    }
+    const res = await postCommit(`${API_BASE}/documents/commit-async`, payload, "Asinxron importni boshlab bo'lmadi");
     appCache.invalidateTags(["reports", "kpis", "organizations"]);
     return res.json();
   },
@@ -453,6 +461,17 @@ export const apiClient = {
       headers: getHeaders(),
     });
     if (!res.ok) throw new Error("Zaxira nusxalar ro'yxatini yuklab bo'lmadi");
+    return res.json();
+  },
+
+  async restoreBackup(filename: string, confirmation: string): Promise<{ pre_restore_backup: string; message: string }> {
+    const res = await authFetch(`${API_BASE}/backup/${encodeURIComponent(filename)}/restore`, {
+      method: "POST",
+      headers: getHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ confirmation }),
+    });
+    if (!res.ok) throw await errorFrom(res, "Zaxiradan tiklab bo'lmadi");
+    appCache.invalidateAll();
     return res.json();
   },
 

@@ -56,6 +56,9 @@ async def seed_database():
             await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reversal_reason VARCHAR(255);"))
             await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS created_at DATE DEFAULT CURRENT_DATE;"))
             await conn.execute(text("ALTER TABLE counterparties ADD COLUMN IF NOT EXISTS phone VARCHAR(50);"))
+            await conn.execute(text("ALTER TABLE document_ingestion_logs ADD COLUMN IF NOT EXISTS file_sha256 VARCHAR(64);"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_document_ingestion_logs_file_sha256 ON document_ingestion_logs (file_sha256);"))
+            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_ingestion_org_file_completed ON document_ingestion_logs (organization_id, file_sha256) WHERE status = 'COMPLETED';"))
         except Exception as alter_err:
             logger.info(f"Column verify info: {alter_err}")
     logger.info("Tables created or verified.")

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Tuple, Dict, Any, Optional
 import pandas as pd
 from app.services.parsers.base import BaseDocumentParser, ParsedDocumentRecord
-from app.services.parsers.normalize import parse_amount, parse_date
+from app.services.parsers.normalize import UnparseableValue, parse_amount, parse_date, require_amount, require_date
 
 class BankParser(BaseDocumentParser):
     """
@@ -28,6 +28,7 @@ class BankParser(BaseDocumentParser):
         return is_match, round(confidence, 2)
 
     def parse_file(self, file_path: str) -> List[ParsedDocumentRecord]:
+        self.row_errors: List[str] = []
         if file_path.endswith(".txt"):
             return self._parse_1c_txt(file_path)
         return self._parse_excel(file_path)
@@ -48,67 +49,71 @@ class BankParser(BaseDocumentParser):
         records: List[ParsedDocumentRecord] = []
         col_map = self._map_bank_columns(list(df.columns))
 
-        for _, row in df.iterrows():
-            purpose = self._get_str(row, col_map.get("purpose")) or "Bank operatsiyasi"
-            if "jami" in purpose.lower() or "итого" in purpose.lower() or "qoldiq" in purpose.lower():
-                continue
+        for row_idx, row in df.iterrows():
+            try:
+                purpose = self._get_str(row, col_map.get("purpose")) or "Bank operatsiyasi"
+                if "jami" in purpose.lower() or "итого" in purpose.lower() or "qoldiq" in purpose.lower():
+                    continue
 
-            doc_number = self._get_str(row, col_map.get("doc_number")) or "BANK"
-            doc_date = self._get_date(row, col_map.get("doc_date"))
+                doc_number = self._get_str(row, col_map.get("doc_number")) or "BANK"
+                doc_date = self._get_date(row, col_map.get("doc_date"))
 
-            inflow = self._get_decimal(row, col_map.get("debit_inflow"))
-            outflow = self._get_decimal(row, col_map.get("credit_outflow"))
+                inflow = self._get_decimal(row, col_map.get("debit_inflow"))
+                outflow = self._get_decimal(row, col_map.get("credit_outflow"))
 
-            if inflow == Decimal("0") and outflow == Decimal("0"):
-                amt = self._get_decimal(row, col_map.get("amount"))
-                if amt > 0:
-                    inflow = amt
+                if inflow == Decimal("0") and outflow == Decimal("0"):
+                    amt = self._get_decimal(row, col_map.get("amount"))
+                    if amt > 0:
+                        inflow = amt
+                    else:
+                        outflow = abs(amt)
+
+                is_inflow = inflow > Decimal("0")
+                total_amt = inflow if is_inflow else outflow
+
+                if total_amt <= Decimal("0"):
+                    continue
+
+                cp_name = self._get_str(row, col_map.get("counterparty")) or "Noma'lum kontragent"
+                cp_inn = self._extract_inn(self._get_str(row, col_map.get("inn")) or purpose or cp_name)
+                cp_mfo = self._extract_mfo(self._get_str(row, col_map.get("mfo")))
+                cp_acc = self._get_str(row, col_map.get("account"))
+
+                # Uzbekistan Chart of Accounts:
+                # Kirim (Inflow to bank): Dt 5110 (Bank), Kt 4000 (Xaridor) or 6000 (Qaytarish)
+                # Chiqim (Outflow from bank): Dt 6000 (Ta'minotchi) or 6800 (Soliq), Kt 5110 (Bank)
+                if is_inflow:
+                    debit_acc = "5110"
+                    credit_acc = "4000"
                 else:
-                    outflow = abs(amt)
+                    if any(k in purpose.lower() for k in ["soliq", "byudjet", "qqs", "ndfl", "daromad"]):
+                        debit_acc = "6800"
+                    else:
+                        debit_acc = "6000"
+                    credit_acc = "5110"
 
-            is_inflow = inflow > Decimal("0")
-            total_amt = inflow if is_inflow else outflow
-
-            if total_amt <= Decimal("0"):
+                rec = ParsedDocumentRecord(
+                    doc_number=doc_number,
+                    doc_date=doc_date,
+                    doc_type="BANK",
+                    counterparty_name=cp_name,
+                    counterparty_inn=cp_inn,
+                    counterparty_mfo=cp_mfo,
+                    counterparty_account=cp_acc,
+                    quantity=Decimal("1"),
+                    price=total_amt,
+                    total_amount=total_amt,
+                    vat_rate=Decimal("0"),
+                    vat_amount=Decimal("0"),
+                    debit_account=debit_acc,
+                    credit_account=credit_acc,
+                    description=purpose,
+                    raw_payload={k: str(v) for k, v in row.items() if pd.notna(v)}
+                )
+                records.append(rec)
+            except UnparseableValue as cell_error:
+                self.row_errors.append(f"Ma'lumot qatori {row_idx + 1}: {cell_error}")
                 continue
-
-            cp_name = self._get_str(row, col_map.get("counterparty")) or "Noma'lum kontragent"
-            cp_inn = self._extract_inn(self._get_str(row, col_map.get("inn")) or purpose or cp_name)
-            cp_mfo = self._extract_mfo(self._get_str(row, col_map.get("mfo")))
-            cp_acc = self._get_str(row, col_map.get("account"))
-
-            # Uzbekistan Chart of Accounts:
-            # Kirim (Inflow to bank): Dt 5110 (Bank), Kt 4000 (Xaridor) or 6000 (Qaytarish)
-            # Chiqim (Outflow from bank): Dt 6000 (Ta'minotchi) or 6800 (Soliq), Kt 5110 (Bank)
-            if is_inflow:
-                debit_acc = "5110"
-                credit_acc = "4000"
-            else:
-                if any(k in purpose.lower() for k in ["soliq", "byudjet", "qqs", "ndfl", "daromad"]):
-                    debit_acc = "6800"
-                else:
-                    debit_acc = "6000"
-                credit_acc = "5110"
-
-            rec = ParsedDocumentRecord(
-                doc_number=doc_number,
-                doc_date=doc_date,
-                doc_type="BANK",
-                counterparty_name=cp_name,
-                counterparty_inn=cp_inn,
-                counterparty_mfo=cp_mfo,
-                counterparty_account=cp_acc,
-                quantity=Decimal("1"),
-                price=total_amt,
-                total_amount=total_amt,
-                vat_rate=Decimal("0"),
-                vat_amount=Decimal("0"),
-                debit_account=debit_acc,
-                credit_account=credit_acc,
-                description=purpose,
-                raw_payload={k: str(v) for k, v in row.items() if pd.notna(v)}
-            )
-            records.append(rec)
 
         return records
 
@@ -209,13 +214,13 @@ class BankParser(BaseDocumentParser):
     def _get_decimal(row: pd.Series, col: Optional[str]) -> Decimal:
         if not col or col not in row:
             return Decimal("0")
-        return parse_amount(row[col]) or Decimal("0")
+        return require_amount(row[col], Decimal("0"))
 
     @staticmethod
     def _get_date(row: pd.Series, col: Optional[str]) -> date:
         if not col or col not in row:
             return date.today()
-        return parse_date(row[col]) or date.today()
+        return require_date(row[col], date.today())
 
     @staticmethod
     def _extract_inn(text: Optional[str]) -> Optional[str]:

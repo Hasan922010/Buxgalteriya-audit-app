@@ -8,6 +8,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from app.schemas.report import TrialBalanceReport, MaterialReport, AktSverkaReport
+from app.services.excel_safety import neutralize_formula_injection
 
 class ExportEngine:
     """
@@ -123,6 +124,7 @@ class ExportEngine:
             ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
 
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output
@@ -363,6 +365,7 @@ class ExportEngine:
             ws_mxik.freeze_panes = "A6"
 
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output

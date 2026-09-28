@@ -4,6 +4,7 @@ from openpyxl.utils import get_column_letter
 from io import BytesIO
 from decimal import Decimal
 from .tax_audit_schemas import TaxAuditDocument
+from app.services.excel_safety import neutralize_formula_injection
 
 class TaxAuditExcelGenerator:
     @staticmethod
@@ -198,5 +199,6 @@ class TaxAuditExcelGenerator:
             ws.column_dimensions[get_column_letter(col_i)].width = w
 
         out = BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(out)
         return out.getvalue()

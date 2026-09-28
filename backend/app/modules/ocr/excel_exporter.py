@@ -7,6 +7,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.modules.ocr.ocr_extractor import ExtractedDocument, ExtractedLineItem
+from app.services.excel_safety import neutralize_formula_injection
 
 class OCRExcelExporter:
     """
@@ -334,6 +335,7 @@ class OCRExcelExporter:
 
         # Save to buffer
         output = io.BytesIO()
+        neutralize_formula_injection(wb)
         wb.save(output)
         output.seek(0)
         return output

@@ -328,12 +328,20 @@ export default function MaterialsPage() {
           const row = info.row.original;
           return (
             <div className="text-right">
-              <div className="font-mono text-blue-700 font-bold text-xs">
+              <div className={`font-mono font-bold text-xs ${row.has_negative_stock ? "text-rose-700" : "text-blue-700"}`}>
                 {formatQuantity(row.final_qty, row.unit)}
               </div>
               <div className="text-[10px] text-blue-600 font-mono font-semibold">
                 {formatCurrency(row.final_sum)}
               </div>
+              {row.has_negative_stock && (
+                <div
+                  className="text-[10px] font-semibold text-rose-700"
+                  title="Chiqim kirimdan oshib ketgan: kirim hujjatlari yetishmayapti bo'lishi mumkin"
+                >
+                  Manfiy qoldiq
+                </div>
+              )}
             </div>
           );
         },

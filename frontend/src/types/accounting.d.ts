@@ -81,6 +81,7 @@ export interface MaterialReportItem {
   closing_qty?: number;
   final_sum?: number;
   closing_sum?: number;
+  has_negative_stock?: boolean;
 }
 
 export interface MaterialReportMxikGroup {

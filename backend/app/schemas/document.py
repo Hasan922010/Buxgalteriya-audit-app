@@ -58,6 +58,8 @@ class CommitMappingRequest(BaseModel):
     operation_type: Optional[str] = "INFLOW"  # 'INITIAL_BALANCE', 'INFLOW', 'OUTFLOW'
     default_debit_account: Optional[str] = None
     default_credit_account: Optional[str] = None
+    # Re-import a file this organization already booked (otherwise rejected with 409)
+    allow_duplicate: bool = False
 
 class CommitResponse(BaseModel):
     success: bool

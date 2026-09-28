@@ -9,9 +9,10 @@ from pydantic import BaseModel
 from app.core.auth import accessible_org_ids, ensure_org_access, filter_by_orgs, get_current_user
 from app.models.user import User
 from app.core.database import get_db
-from app.core.rbac import UserRole, require_roles, ROLE_LABELS
+from app.core.rbac import UserRole, require_roles, require_system_reset_enabled, ROLE_LABELS
 from app.core.storage import InvalidStoragePath, resolve_backup_path
 from app.services.backup_engine import BackupEngine
+from app.services.restore_engine import RestoreError, load_backup, restore_backup
 
 router = APIRouter()
 
@@ -113,3 +114,53 @@ async def download_backup_file(
         media_type="application/json",
         filename=safe_filename
     )
+
+
+class RestoreBackupRequest(BaseModel):
+    confirmation: str
+
+
+@router.post("/{filename}/restore", dependencies=[Depends(require_system_reset_enabled)])
+async def restore_backup_file(
+    filename: str,
+    payload: RestoreBackupRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    current_role: UserRole = Depends(require_roles([UserRole.CHIEF_ACCOUNTANT]))
+):
+    """
+    Replaces the current data of the organization(s) in the snapshot with the snapshot content.
+    Requires ALLOW_SYSTEM_RESET=True and typing 'TIKLASH'. Full-database snapshots: superuser only.
+    The current state is backed up first, so a restore can itself be undone.
+    """
+    if payload.confirmation.strip().upper() != "TIKLASH":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tasdiqlash kodi noto'g'ri. Zaxiradan tiklash uchun 'TIKLASH' so'zini kiriting."
+        )
+    await _ensure_backup_access(db, current_user, filename)
+    try:
+        snapshot = load_backup(filename)
+    except RestoreError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    actor = f"{current_user.full_name or current_user.username} ({ROLE_LABELS.get(current_role, current_role.value)})"
+    owner = snapshot.get("organization_id", "ALL")
+    pre_restore = await BackupEngine.create_backup(
+        session=db,
+        organization_id=None if owner == "ALL" else uuid.UUID(owner),
+        created_by=f"{actor} (tiklashdan oldin avtomatik)"
+    )
+    try:
+        stats = await restore_backup(db, snapshot, performed_by=actor)
+        await db.commit()
+    except RestoreError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return {
+        "success": True,
+        "restored_from": filename,
+        "pre_restore_backup": pre_restore["filename"],
+        "stats": stats,
+        "message": "Ma'lumotlar zaxira nusxasidan tiklandi."
+    }

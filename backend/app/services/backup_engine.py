@@ -62,7 +62,7 @@ class BackupEngine:
         logs = logs_res.scalars().all()
 
         backup_payload = {
-            "backup_version": "1.0",
+            "backup_version": "1.1",
             "backup_id": backup_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": created_by,
@@ -101,6 +101,9 @@ class BackupEngine:
                         "organization_id": str(c.organization_id),
                         "name": c.name,
                         "inn": c.inn,
+                        "mfo": c.mfo,
+                        "bank_account": c.bank_account,
+                        "phone": c.phone,
                         "is_supplier": c.is_supplier,
                         "is_client": c.is_client
                     } for c in cps
@@ -112,7 +115,8 @@ class BackupEngine:
                         "name": it.name,
                         "ikpu_code": it.ikpu_code,
                         "package_code": it.package_code,
-                        "unit": it.unit
+                        "unit": it.unit,
+                        "min_stock_alert": str(it.min_stock_alert) if it.min_stock_alert is not None else None
                     } for it in items
                 ],
                 "transactions": [
@@ -132,7 +136,11 @@ class BackupEngine:
                         "vat_rate": str(t.vat_rate),
                         "vat_amount": str(t.vat_amount),
                         "is_reversed": t.is_reversed,
-                        "description": t.description
+                        "reversal_ref_id": str(t.reversal_ref_id) if t.reversal_ref_id else None,
+                        "reversal_reason": t.reversal_reason,
+                        "description": t.description,
+                        "raw_payload": t.raw_payload,
+                        "created_at": str(t.created_at) if t.created_at else None
                     } for t in txs
                 ],
                 "audit_logs": [
@@ -141,6 +149,7 @@ class BackupEngine:
                         "organization_id": str(l.organization_id),
                         "action": l.action,
                         "entity_type": l.entity_type,
+                        "entity_id": l.entity_id,
                         "performed_by": l.performed_by,
                         "details": l.details,
                         "created_at": l.created_at.isoformat() if hasattr(l.created_at, "isoformat") else str(l.created_at)

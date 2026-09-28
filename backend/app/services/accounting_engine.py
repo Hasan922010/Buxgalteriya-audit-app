@@ -30,6 +30,65 @@ def round_qty(val: Decimal) -> Decimal:
     """Standard inventory rounding to 3 decimal places."""
     return val.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
+# Stock (inventory) accounts: debit = goods received, credit = goods issued
+STOCK_ACCOUNTS = {"1000", "1010", "2900", "2910"}
+# Document types that issue goods even when posted against revenue (e.g. retail sale 5000/9000)
+OUTFLOW_DOC_TYPES = {"STOCK", "SOLIQ_SALES", "MANUAL"}
+
+
+def classify_stock_movement(t: Transaction) -> int:
+    """+1 goods received, -1 goods issued, 0 no stock movement (e.g. a payment)."""
+    if t.doc_type == "INITIAL_STOCK" or t.debit_account in STOCK_ACCOUNTS:
+        return 1
+    if t.credit_account in STOCK_ACCOUNTS:
+        return -1
+    if t.doc_type == "EHF" and not t.credit_account:
+        return 1
+    if t.doc_type in OUTFLOW_DOC_TYPES:
+        return -1
+    return 0
+
+
+def _qty(t: Transaction) -> Decimal:
+    return Decimal(str(t.quantity or 0))
+
+
+def _amount(t: Transaction) -> Decimal:
+    return Decimal(str(t.total_amount or 0))
+
+
+class _OpeningStock:
+    def __init__(self) -> None:
+        self.qty = Decimal("0.000")
+        self.amount = Decimal("0.00")
+        self.went_negative = False
+
+
+def _opening_stock(txs: List[Transaction], from_date: date, to_date: date) -> _OpeningStock:
+    """
+    Stock before the period, costing each issue at the running (perpetual) average,
+    so sales recorded at selling price never inflate or distort the opening value.
+    """
+    state = _OpeningStock()
+    for t in txs:  # already ordered by date
+        is_initial = t.doc_type == "INITIAL_STOCK" and t.doc_date <= to_date
+        if not (is_initial or t.doc_date < from_date):
+            continue
+        direction = classify_stock_movement(t)
+        if direction > 0:
+            state.qty += _qty(t)
+            state.amount += _amount(t)
+        elif direction < 0:
+            avg = state.amount / state.qty if state.qty > 0 else Decimal("0")
+            state.qty -= _qty(t)
+            state.amount -= _qty(t) * avg
+            if state.qty < 0:
+                state.went_negative = True
+    return state
+
+
+# Red storno: both the original and its negative reversal stay in the ledger. Reports include
+# them in their own periods, so a storno never rewrites an already-reported (past) period.
 class AccountingEngine:
     """
     Deterministic Financial Accounting Engine for Uzbekistan BHMS & Simple Accounting.
@@ -68,7 +127,6 @@ class AccountingEngine:
             Transaction.organization_id == organization_id,
             Transaction.doc_date < from_date,
             Transaction.debit_account != None,
-            Transaction.is_reversed == False
         ).group_by(Transaction.debit_account)
         prior_debits = {row[0]: Decimal(str(row[1])) for row in (await session.execute(prior_debits_q)).all()}
 
@@ -79,7 +137,6 @@ class AccountingEngine:
             Transaction.organization_id == organization_id,
             Transaction.doc_date < from_date,
             Transaction.credit_account != None,
-            Transaction.is_reversed == False
         ).group_by(Transaction.credit_account)
         prior_credits = {row[0]: Decimal(str(row[1])) for row in (await session.execute(prior_credits_q)).all()}
 
@@ -92,7 +149,6 @@ class AccountingEngine:
             Transaction.doc_date >= from_date,
             Transaction.doc_date <= to_date,
             Transaction.debit_account != None,
-            Transaction.is_reversed == False
         ).group_by(Transaction.debit_account)
         period_debits = {row[0]: Decimal(str(row[1])) for row in (await session.execute(period_debits_q)).all()}
 
@@ -104,7 +160,6 @@ class AccountingEngine:
             Transaction.doc_date >= from_date,
             Transaction.doc_date <= to_date,
             Transaction.credit_account != None,
-            Transaction.is_reversed == False
         ).group_by(Transaction.credit_account)
         period_credits = {row[0]: Decimal(str(row[1])) for row in (await session.execute(period_credits_q)).all()}
 
@@ -239,62 +294,37 @@ class AccountingEngine:
             tx_q = select(Transaction).where(
                 Transaction.organization_id == organization_id,
                 Transaction.item_id == it.id,
-                Transaction.is_reversed == False
             ).order_by(Transaction.doc_date, Transaction.id)
             txs = (await session.execute(tx_q)).scalars().all()
 
-            # 1. Opening balance prior to from_date or marked as INITIAL_STOCK
-            init_q = Decimal("0.000")
-            init_s = Decimal("0.00")
-            for t in txs:
-                if t.doc_type == "INITIAL_STOCK" or t.doc_date < from_date:
-                    qty = Decimal(str(t.quantity or 0))
-                    amt = Decimal(str(t.total_amount or 0))
-                    # Inflows: debit to stock/materials (1000, 2900) or doc_type in ['INITIAL_STOCK', 'EHF', 'STOCK']
-                    if t.doc_type == "INITIAL_STOCK" or t.debit_account in ["1000", "1010", "2900", "2910"] or t.doc_type == "EHF" or amt > 0:
-                        init_q += qty
-                        init_s += amt
-                    else:
-                        init_q -= qty
-                        init_s -= amt
-            if init_q < Decimal("0"):
-                init_q = Decimal("0.000")
-            if init_s < Decimal("0"):
-                init_s = Decimal("0.00")
+            # 1. Opening balance: perpetual weighted average over everything before the period
+            opening = _opening_stock(txs, from_date, to_date)
+            init_q, init_s = opening.qty, opening.amount
 
-            # 2. Inflows and Outflows during [from_date, to_date]
+            # 2. Inflows and outflows during [from_date, to_date]
             in_q = Decimal("0.000")
             in_s = Decimal("0.00")
             out_q = Decimal("0.000")
-
             for t in txs:
-                if t.doc_type != "INITIAL_STOCK" and from_date <= t.doc_date <= to_date:
-                    qty = Decimal(str(t.quantity or 0))
-                    amt = Decimal(str(t.total_amount or 0))
-                    # Inflows: kirim
-                    if t.debit_account in ["1000", "1010", "2900", "2910"] or (t.doc_type == "EHF" and not t.credit_account):
-                        in_q += qty
-                        in_s += amt
-                    # Outflows: chiqim (sotish, ombor chiqimi, kassa realizatsiyasi)
-                    elif t.credit_account in ["1000", "1010", "2900", "2910"] or t.doc_type in ["STOCK", "SOLIQ_SALES", "MANUAL"]:
-                        out_q += qty
+                if t.doc_type == "INITIAL_STOCK" or not (from_date <= t.doc_date <= to_date):
+                    continue
+                direction = classify_stock_movement(t)
+                if direction > 0:
+                    in_q += _qty(t)
+                    in_s += _amount(t)
+                elif direction < 0:
+                    out_q += _qty(t)
 
-            # 3. Weighted Average Cost calculation: P_bar = (S0 + Sin) / (Q0 + Qin)
+            # 3. Periodic weighted average cost: P_bar = (S0 + Sin) / (Q0 + Qin)
             total_avail_q = init_q + in_q
             total_avail_s = init_s + in_s
-            if total_avail_q > Decimal("0"):
-                avg_price = total_avail_s / total_avail_q
-            else:
-                avg_price = Decimal("0.00")
+            avg_price = total_avail_s / total_avail_q if total_avail_q > 0 else Decimal("0.00")
 
             out_s = out_q * avg_price
             fin_q = total_avail_q - out_q
             fin_s = total_avail_s - out_s
-
-            if fin_q < Decimal("0"):
-                fin_q = Decimal("0.000")
-            if fin_s < Decimal("0"):
-                fin_s = Decimal("0.00")
+            # Negative stock means missing inflow documents: report it, never hide it
+            has_negative_stock = opening.went_negative or fin_q < 0
 
             rep_item = MaterialReportItem(
                 item_id=it.id,
@@ -309,7 +339,8 @@ class AccountingEngine:
                 outflow_sum=round_money(out_s),
                 avg_price=round_money(avg_price),
                 final_qty=round_qty(fin_q),
-                final_sum=round_money(fin_s)
+                final_sum=round_money(fin_s),
+                has_negative_stock=has_negative_stock
             )
             report_items.append(rep_item)
 
@@ -408,7 +439,6 @@ class AccountingEngine:
             Transaction.organization_id == organization_id,
             Transaction.counterparty_id == counterparty_id,
             Transaction.doc_date < from_date,
-            Transaction.is_reversed == False
         )
         prior_txs = (await session.execute(prior_q)).scalars().all()
 
@@ -430,7 +460,6 @@ class AccountingEngine:
             Transaction.counterparty_id == counterparty_id,
             Transaction.doc_date >= from_date,
             Transaction.doc_date <= to_date,
-            Transaction.is_reversed == False
         ).order_by(Transaction.doc_date, Transaction.id)
         period_txs = (await session.execute(period_q)).scalars().all()
 
@@ -509,7 +538,6 @@ class AccountingEngine:
         inflow_q = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.doc_date >= first_of_month,
-            Transaction.is_reversed == False,
             or_(
                 Transaction.debit_account.in_(["5000", "5110", "4000", "1000", "2900"]),
                 Transaction.doc_type == "EHF"
@@ -521,7 +549,6 @@ class AccountingEngine:
         outflow_q = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.doc_date >= first_of_month,
-            Transaction.is_reversed == False,
             or_(
                 Transaction.credit_account.in_(["5000", "5110", "6000"]),
                 Transaction.doc_type == "BANK"
@@ -533,12 +560,10 @@ class AccountingEngine:
         cash_dt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.debit_account.in_(["5000", "5110"]),
-            Transaction.is_reversed == False
         )
         cash_kt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.credit_account.in_(["5000", "5110"]),
-            Transaction.is_reversed == False
         )
         c_dt = Decimal(str((await session.execute(cash_dt)).scalar_one()))
         c_kt = Decimal(str((await session.execute(cash_kt)).scalar_one()))
@@ -548,12 +573,10 @@ class AccountingEngine:
         inv_dt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.debit_account.in_(["1000", "2900", "1010", "2910"]),
-            Transaction.is_reversed == False
         )
         inv_kt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.credit_account.in_(["1000", "2900", "1010", "2910"]),
-            Transaction.is_reversed == False
         )
         i_dt = Decimal(str((await session.execute(inv_dt)).scalar_one()))
         i_kt = Decimal(str((await session.execute(inv_kt)).scalar_one()))
@@ -563,24 +586,20 @@ class AccountingEngine:
         rec_dt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.debit_account.in_(["4000", "4010"]),
-            Transaction.is_reversed == False
         )
         rec_kt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.credit_account.in_(["4000", "4010"]),
-            Transaction.is_reversed == False
         )
         receivables = max(Decimal("0.00"), Decimal(str((await session.execute(rec_dt)).scalar_one())) - Decimal(str((await session.execute(rec_kt)).scalar_one())))
 
         pay_kt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.credit_account.in_(["6000", "6010"]),
-            Transaction.is_reversed == False
         )
         pay_dt = select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
             Transaction.organization_id == organization_id,
             Transaction.debit_account.in_(["6000", "6010"]),
-            Transaction.is_reversed == False
         )
         payables = max(Decimal("0.00"), Decimal(str((await session.execute(pay_kt)).scalar_one())) - Decimal(str((await session.execute(pay_dt)).scalar_one())))
 

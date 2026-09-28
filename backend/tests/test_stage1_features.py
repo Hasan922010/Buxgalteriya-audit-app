@@ -135,9 +135,12 @@ async def test_storno_reversal_and_audit_trail(stage1_session):
     )
     assert storno_result["status"] == "success"
 
-    # 3. Verify OSV after storno (should be 0.00 since original is marked is_reversed=True)
-    osv_after = await AccountingEngine.calculate_oborotka(session, org.id, date(2025, 1, 1), date(2025, 12, 31))
-    assert osv_after.total_turnover_debit == Decimal("0.00")
+    # 3. Red storno: the original 2025 period is NOT rewritten; the negative reversal
+    #    (dated today) offsets it, so the cumulative turnover nets to zero.
+    osv_2025 = await AccountingEngine.calculate_oborotka(session, org.id, date(2025, 1, 1), date(2025, 12, 31))
+    assert osv_2025.total_turnover_debit == Decimal("10000000.00")
+    osv_cumulative = await AccountingEngine.calculate_oborotka(session, org.id, date(2025, 1, 1), date.today())
+    assert osv_cumulative.total_turnover_debit == Decimal("0.00")
 
     # 4. Verify Audit Log was recorded
     audit_res = await session.execute(select(AuditLog).where(AuditLog.organization_id == org.id))

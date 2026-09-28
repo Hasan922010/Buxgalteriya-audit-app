@@ -223,6 +223,25 @@ Testlar soni: 46 → 161 (hammasi o'tadi).
 
 Tekshiruv: 193 backend test o'tdi. Ular orasida barcha endpoint'lar tokensiz 401 qaytarishini tekshiradigan test va mutatsiya bilan tekshirilgan tenancy testlari bor. `tsc` xatosiz. Brauzerda sinaldi: tokensiz → `/login`, noto'g'ri parol → xato xabari, login → dashboard, OSV, Excel eksport, chiqish.
 
+### 3-bosqich (2026-09-28): hisob-kitob to'g'riligi
+
+| Topilma | Holat | Nima qilindi |
+|---|---|---|
+| H1 moddiy hisobot | ✅ | Davr boshidagi qoldiq endi joriy o'rtacha tannarx bilan hisoblanadi (perpetual weighted average). Sotuvlar endi kirim deb hisoblanmaydi, pul o'tkazmalari zaxirani o'zgartirmaydi. Manfiy qoldiq endi 0 ga tushirib yashirilmaydi, `has_negative_stock` belgisi bilan UI'da qizil rangda ko'rsatiladi. RED holatda eski kod 40 dona sotuvdan keyin qoldiqni 60 o'rniga **140** deb ko'rsatgan edi |
+| H3 takroriy import | ✅ | Fayl SHA256 hash'i (OCR uchun hujjat "barmoq izi") `document_ingestion_logs.file_sha256` ustunida saqlanadi. Shu tashkilotga shu hujjat qayta kiritilsa 409 qaytadi. Frontend foydalanuvchidan so'raydi va faqat tasdiqlasa `allow_duplicate` bilan qayta yuboradi |
+| H6 Excel formula injection | ✅ | `excel_safety.neutralize_formula_injection` 7 ta saqlash nuqtasining hammasida chaqiriladi. Faqat kod o'zi yozadigan `=SUM(A1:A9)` va `=AVERAGE(...)` formula bo'lib qoladi, `HYPERLINK` va DDE matnga aylanadi |
+| M6 storno | ✅ | Qizil storno: asl yozuv o'z davrida qoladi, manfiy yozuv storno sanasida hisobotga kiradi, ya'ni o'tgan davr hisobotlari endi o'zgarmaydi. Ikki marta storno qilish va storno'ni storno qilish taqiqlangan |
+| Backup'dan tiklash yo'q edi | ✅ | `POST /backup/{filename}/restore` (`ALLOW_SYSTEM_RESET`, "TIKLASH" tasdiq so'zi, Bosh buxgalter roli, backup'ga kirish huquqi, tiklashdan oldin avtomatik backup). Backup formati 1.1: storno bog'lanishlari, `raw_payload`, MFO va telefon kabi maydonlar endi yo'qolmaydi. Sozlamalar sahifasida "Tiklash" tugmasi bor |
+| Summa/sana o'qilmasa jimgina 0 yoki bugungi sana qo'yilardi | ✅ | `require_amount` va `require_date`: bo'sh katakka default qiymat, o'qib bo'lmaydigan katak uchun esa "Ma'lumot qatori N: ..." xatosi qaytadi va qator bazaga yozilmaydi |
+| Review: `commit-parsed` davr qulfi | ✅ tekshirildi | Aslida `record_transaction` orqali qulf tekshirilar ekan (review topilmasi noto'g'ri bo'lib chiqdi). Buni regression test tasdiqlaydi: qulf ishlaydi va yarim yozuvlar qolmaydi |
+
+**3-bosqich code review:** CRITICAL topilma yo'q.
+- ✅ HIGH: takroriy importni tekshirish "avval tekshir, keyin yoz" usulida edi, shuning uchun bir vaqtdagi ikki so'rov ham o'tib ketardi. Endi `(organization_id, file_sha256) WHERE status='COMPLETED'` bo'yicha unique indeks bor va ikkinchi so'rov butunlay bekor qilinib 409 oladi.
+- ✅ MEDIUM: raqamsiz OCR cheklari xato ravishda dublikat deb topilardi. Endi barmoq iziga har bir qatorning mazmuni kiradi.
+- ✅ LOW: tiklashda STIR qayta sinxronlanadi va almashtirilgan tashkilotning a'zoliklari saqlanadi.
+
+Testlar: 223 ta, hammasi o'tadi.
+
 ## Tuzatish yo'l xaritasi
 
 **1-bosqich — Bloklovchi xatolar (1–2 kun)**

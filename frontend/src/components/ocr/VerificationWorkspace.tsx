@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { API_BASE, authFetch } from "@/lib/auth";
+import { API_BASE } from "@/lib/auth";
+import { postCommit } from "@/lib/api-client";
 import {
   ZoomIn,
   ZoomOut,
@@ -378,10 +379,9 @@ export const VerificationWorkspace: React.FC<VerificationWorkspaceProps> = ({
     setCommitting(true);
     setSuccessMessage(null);
     try {
-      const res = await authFetch(`${API_BASE}/ocr/commit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const res = await postCommit(
+        `${API_BASE}/ocr/commit`,
+        {
           organization_id: currentOrg.id,
           document: {
             doc_number: ehfDoc.doc_number,
@@ -406,11 +406,11 @@ export const VerificationWorkspace: React.FC<VerificationWorkspaceProps> = ({
           },
           debit_account: currentOrg.mode === "BHMS" ? "2900" : "1000",
           credit_account: "6000",
-        }),
-      });
+        },
+        "Kiritishda xatolik yuz berdi"
+      );
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Kiritishda xatolik yuz berdi");
 
       setSuccessMessage(data.message || "Hujjat buxgalteriya balansiga muvaffaqiyatli kiritildi!");
       if (onCommitSuccess) onCommitSuccess();

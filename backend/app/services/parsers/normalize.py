@@ -106,6 +106,34 @@ def parse_amount(value: Any) -> Optional[Decimal]:
     return -amount if negative else amount
 
 
+class UnparseableValue(ValueError):
+    """A cell has content that cannot be read as an amount / date (never silently replaced)."""
+
+
+def _is_blank(value: Any) -> bool:
+    return _is_missing(value) or (isinstance(value, str) and value.strip().lower() in _EMPTY_TOKENS)
+
+
+def require_amount(value: Any, default: Optional[Decimal]) -> Optional[Decimal]:
+    """Empty cell -> default; unreadable content -> UnparseableValue (the row must be reported)."""
+    if _is_blank(value):
+        return default
+    parsed = parse_amount(value)
+    if parsed is None:
+        raise UnparseableValue(f"summa o'qilmadi: '{value}'")
+    return parsed
+
+
+def require_date(value: Any, default: Optional[date]) -> Optional[date]:
+    """Empty cell -> default; unreadable content -> UnparseableValue (the row must be reported)."""
+    if _is_blank(value):
+        return default
+    parsed = parse_date(value)
+    if parsed is None:
+        raise UnparseableValue(f"sana o'qilmadi: '{value}'")
+    return parsed
+
+
 def parse_ocr_amount(value: Any) -> Optional[Decimal]:
     """Like parse_amount, but first drops OCR noise characters (letters, stray symbols)."""
     strict = parse_amount(value)

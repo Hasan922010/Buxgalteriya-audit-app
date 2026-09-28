@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Tuple, Dict, Any, Optional
 import pandas as pd
 from app.services.parsers.base import BaseDocumentParser, ParsedDocumentRecord
-from app.services.parsers.normalize import parse_amount, parse_date
+from app.services.parsers.normalize import UnparseableValue, parse_amount, parse_date, require_amount, require_date
 
 class DidoxParser(BaseDocumentParser):
     """
@@ -28,6 +28,7 @@ class DidoxParser(BaseDocumentParser):
         return is_match, round(confidence, 2)
 
     def parse_file(self, file_path: str) -> List[ParsedDocumentRecord]:
+        self.row_errors: List[str] = []
         # Read excel file - find header row
         df_raw = pd.read_excel(file_path, header=None)
         
@@ -45,56 +46,60 @@ class DidoxParser(BaseDocumentParser):
 
         col_map = self._map_columns(list(df.columns))
 
-        for _, row in df.iterrows():
-            # Skip empty or total rows
-            item_name = self._get_str(row, col_map.get("item_name"))
-            if not item_name or "jami" in item_name.lower() or "итого" in item_name.lower():
+        for row_idx, row in df.iterrows():
+            try:
+                # Skip empty or total rows
+                item_name = self._get_str(row, col_map.get("item_name"))
+                if not item_name or "jami" in item_name.lower() or "итого" in item_name.lower():
+                    continue
+
+                doc_number = self._get_str(row, col_map.get("doc_number")) or "EHF"
+                doc_date = self._get_date(row, col_map.get("doc_date"))
+
+                qty = self._get_decimal(row, col_map.get("quantity"))
+                price = self._get_decimal(row, col_map.get("price"))
+                total_amt = self._get_decimal(row, col_map.get("total_amount"))
+                if total_amt == Decimal("0") and qty > Decimal("0") and price > Decimal("0"):
+                    total_amt = qty * price
+
+                vat_rate = self._get_decimal(row, col_map.get("vat_rate"))
+                vat_amount = self._get_decimal(row, col_map.get("vat_amount"))
+                if vat_rate > Decimal("0") and vat_amount == Decimal("0"):
+                    # 12% VAT in UZ
+                    vat_amount = (total_amt * vat_rate / (Decimal("100") + vat_rate)).quantize(Decimal("0.01"))
+
+                cp_name = self._get_str(row, col_map.get("counterparty_name"))
+                cp_inn = self._extract_inn(self._get_str(row, col_map.get("counterparty_inn")) or cp_name)
+
+                ikpu = self._get_str(row, col_map.get("ikpu"))
+                if ikpu and ikpu.isdigit() and len(ikpu) < 17:
+                    ikpu = ikpu.zfill(17)
+                unit = self._get_str(row, col_map.get("unit")) or "dona"
+
+
+                rec = ParsedDocumentRecord(
+                    doc_number=doc_number,
+                    doc_date=doc_date,
+                    doc_type="EHF",
+                    counterparty_name=cp_name,
+                    counterparty_inn=cp_inn,
+                    item_name=item_name,
+                    ikpu_code=ikpu,
+                    unit=unit,
+                    quantity=qty,
+                    price=price,
+                    total_amount=total_amt,
+                    vat_rate=vat_rate,
+                    vat_amount=vat_amount,
+                    debit_account="2900",  # Default incoming goods/merchandise
+                    credit_account="6000", # Default supplier payable
+                    description=f"EHF: {item_name} ({qty} {unit})",
+                    raw_payload={k: str(v) for k, v in row.items() if pd.notna(v)}
+                )
+                records.append(rec)
+            except UnparseableValue as cell_error:
+                self.row_errors.append(f"Ma'lumot qatori {row_idx + 1}: {cell_error}")
                 continue
-
-            doc_number = self._get_str(row, col_map.get("doc_number")) or "EHF"
-            doc_date = self._get_date(row, col_map.get("doc_date"))
-
-            qty = self._get_decimal(row, col_map.get("quantity"))
-            price = self._get_decimal(row, col_map.get("price"))
-            total_amt = self._get_decimal(row, col_map.get("total_amount"))
-            if total_amt == Decimal("0") and qty > Decimal("0") and price > Decimal("0"):
-                total_amt = qty * price
-
-            vat_rate = self._get_decimal(row, col_map.get("vat_rate"))
-            vat_amount = self._get_decimal(row, col_map.get("vat_amount"))
-            if vat_rate > Decimal("0") and vat_amount == Decimal("0"):
-                # 12% VAT in UZ
-                vat_amount = (total_amt * vat_rate / (Decimal("100") + vat_rate)).quantize(Decimal("0.01"))
-
-            cp_name = self._get_str(row, col_map.get("counterparty_name"))
-            cp_inn = self._extract_inn(self._get_str(row, col_map.get("counterparty_inn")) or cp_name)
-
-            ikpu = self._get_str(row, col_map.get("ikpu"))
-            if ikpu and ikpu.isdigit() and len(ikpu) < 17:
-                ikpu = ikpu.zfill(17)
-            unit = self._get_str(row, col_map.get("unit")) or "dona"
-
-
-            rec = ParsedDocumentRecord(
-                doc_number=doc_number,
-                doc_date=doc_date,
-                doc_type="EHF",
-                counterparty_name=cp_name,
-                counterparty_inn=cp_inn,
-                item_name=item_name,
-                ikpu_code=ikpu,
-                unit=unit,
-                quantity=qty,
-                price=price,
-                total_amount=total_amt,
-                vat_rate=vat_rate,
-                vat_amount=vat_amount,
-                debit_account="2900",  # Default incoming goods/merchandise
-                credit_account="6000", # Default supplier payable
-                description=f"EHF: {item_name} ({qty} {unit})",
-                raw_payload={k: str(v) for k, v in row.items() if pd.notna(v)}
-            )
-            records.append(rec)
 
         return records
 
@@ -169,13 +174,13 @@ class DidoxParser(BaseDocumentParser):
     def _get_decimal(row: pd.Series, col: Optional[str]) -> Decimal:
         if not col or col not in row:
             return Decimal("0")
-        return parse_amount(row[col]) or Decimal("0")
+        return require_amount(row[col], Decimal("0"))
 
     @staticmethod
     def _get_date(row: pd.Series, col: Optional[str]) -> date:
         if not col or col not in row:
             return date.today()
-        return parse_date(row[col]) or date.today()
+        return require_date(row[col], date.today())
 
     @staticmethod
     def _extract_inn(text: Optional[str]) -> Optional[str]:

@@ -32,6 +32,7 @@ import {
   Plus,
   ArrowRightLeft,
   AlertOctagon,
+  RotateCcw,
 } from "lucide-react";
 
 export default function SettingsPage() {
@@ -44,6 +45,7 @@ export default function SettingsPage() {
     currentRole,
     resetOrgData,
     factoryReset,
+    refreshOrganizations,
   } = useOrg();
   const isChief = currentRole === "CHIEF_ACCOUNTANT";
   const [mode, setMode] = useState<AccountingMode>(currentOrg?.mode || "SIMPLE");
@@ -212,6 +214,25 @@ export default function SettingsPage() {
       alert(`✅ Zaxira butunligi tasdiqlandi!\n\nFayl: ${res.filename}\nSHA256: ${res.actual_checksum}\nTranzaksiyalar soni: ${res.stats?.transactions || 0}`);
     } catch (err: any) {
       alert(`❌ Xatolik: ${err.message}`);
+    }
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    if (!isChief) return;
+    const confirmation = window.prompt(
+      `DIQQAT! "${filename}" zaxirasidagi tashkilot(lar)ning joriy ma'lumotlari zaxira holati bilan almashtiriladi.\n` +
+        "Joriy holat avval avtomatik zaxiralanadi.\n\nDavom etish uchun TIKLASH deb yozing:"
+    );
+    if (!confirmation) return;
+    setBackupMessage(null);
+    try {
+      const res = await apiClient.restoreBackup(filename, confirmation);
+      setBackupMessage(`${res.message} Oldingi holat saqlandi: ${res.pre_restore_backup}`);
+      await refreshOrganizations();
+      await fetchBackups();
+      await fetchAuditLogs();
+    } catch (err: any) {
+      setBackupMessage(`Xatolik: ${err.message}`);
     }
   };
 
@@ -731,6 +752,16 @@ export default function SettingsPage() {
                     <Download className="w-3.5 h-3.5" />
                     <span>Yuklab olish</span>
                   </AuthDownloadLink>
+
+                  <button
+                    onClick={() => handleRestoreBackup(b.filename)}
+                    disabled={!isChief}
+                    title={!isChief ? "Faqat Bosh buxgalter zaxiradan tiklay oladi" : "Ma'lumotlarni shu zaxira holatiga qaytarish"}
+                    className="px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed text-amber-800 text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Tiklash</span>
+                  </button>
                 </div>
               </div>
             ))}

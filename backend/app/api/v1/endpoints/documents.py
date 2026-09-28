@@ -39,7 +39,8 @@ from app.services.parsers.soliq_parser import SoliqParser
 from app.services.parsers.material_parser import MaterialParser
 from app.services.parsers.smart_excel_mapper import SmartExcelMapper
 from app.services.parsers.base import ParsedDocumentRecord
-from app.services.parsers.normalize import parse_amount, parse_date
+from app.services.parsers.normalize import UnparseableValue, parse_amount, parse_date, require_amount, require_date
+from app.services.import_guard import commit_or_conflict, ensure_not_duplicate, file_sha256, record_import
 
 router = APIRouter()
 
@@ -163,16 +164,22 @@ async def execute_document_import(
     if not org:
         raise HTTPException(status_code=404, detail="Tashkilot topilmadi")
 
+    digest = file_sha256(file_path)
+    await ensure_not_duplicate(db, org.id, digest, request.allow_duplicate)
+
     if task_info:
         task_info.update_progress(10, "Fayl o'qilmoqda va format tahlil qilinmoqda...")
 
     records: List[ParsedDocumentRecord] = []
+    parse_errors: List[str] = []
 
     try:
         op_type = getattr(request, "operation_type", None) or "INFLOW"
 
         if request.format_type == "DIDOX_EHF":
-            records = DidoxParser().parse_file(file_path)
+            parser = DidoxParser()
+            records = parser.parse_file(file_path)
+            parse_errors.extend(parser.row_errors)
             if op_type == "INITIAL_BALANCE":
                 for r in records:
                     r.doc_type = "INITIAL_BALANCE"
@@ -186,9 +193,13 @@ async def execute_document_import(
                     r.debit_account = request.default_debit_account or ("4000" if org.mode == "BHMS" else "5000")
                     r.credit_account = request.default_credit_account or "9000"
         elif request.format_type == "BANK_STATEMENT":
-            records = BankParser().parse_file(file_path)
+            parser = BankParser()
+            records = parser.parse_file(file_path)
+            parse_errors.extend(parser.row_errors)
         elif request.format_type == "SOLIQ_REGISTRY" and not request.mapping:
-            records = SoliqParser().parse_file(file_path)
+            parser = SoliqParser()
+            records = parser.parse_file(file_path)
+            parse_errors.extend(parser.row_errors)
             if op_type == "INITIAL_BALANCE":
                 for r in records:
                     r.doc_type = "INITIAL_BALANCE"
@@ -214,108 +225,112 @@ async def execute_document_import(
                 default_crd = request.default_credit_account or ("9000" if is_sales else ("6000" if request.doc_type == "EHF" else "4000"))
 
             for idx, row in df.iterrows():
-                doc_num = str(idx + 1)
-                if m.doc_num_col and pd.notna(row.get(m.doc_num_col)):
-                    raw_num = str(row[m.doc_num_col]).strip()
-                    if raw_num.endswith(".0"):
-                        raw_num = raw_num[:-2]
-                    if raw_num and raw_num != "nan":
-                        doc_num = raw_num
+                try:
+                    doc_num = str(idx + 1)
+                    if m.doc_num_col and pd.notna(row.get(m.doc_num_col)):
+                        raw_num = str(row[m.doc_num_col]).strip()
+                        if raw_num.endswith(".0"):
+                            raw_num = raw_num[:-2]
+                        if raw_num and raw_num != "nan":
+                            doc_num = raw_num
 
-                doc_d = (parse_date(row.get(m.date_col)) if m.date_col else None) or date.today()
+                    doc_d = (require_date(row.get(m.date_col), date.today()) if m.date_col else date.today())
 
-                tot = Decimal("0")
-                for sum_col in (m.total_col, m.inflow_sum_col, m.initial_sum_col, m.outflow_sum_col):
-                    if sum_col and pd.notna(row.get(sum_col)):
-                        tot = parse_amount(row.get(sum_col)) or Decimal("0")
-                        break
+                    tot = Decimal("0")
+                    for sum_col in (m.total_col, m.inflow_sum_col, m.initial_sum_col, m.outflow_sum_col):
+                        if sum_col and pd.notna(row.get(sum_col)):
+                            tot = require_amount(row.get(sum_col), Decimal("0"))
+                            break
 
-                # Barcode / GTIN
-                barcode = str(row.get(m.barcode_col, "")).strip() if m.barcode_col and pd.notna(row.get(m.barcode_col)) else None
-                if barcode and barcode.endswith(".0"):
-                    barcode = barcode[:-2]
+                    # Barcode / GTIN
+                    barcode = str(row.get(m.barcode_col, "")).strip() if m.barcode_col and pd.notna(row.get(m.barcode_col)) else None
+                    if barcode and barcode.endswith(".0"):
+                        barcode = barcode[:-2]
 
-                # IKPU / MXIK
-                ikpu = str(row.get(m.ikpu_col, "")).strip() if m.ikpu_col and pd.notna(row.get(m.ikpu_col)) else None
-                if ikpu and ikpu.endswith(".0"):
-                    ikpu = ikpu[:-2]
+                    # IKPU / MXIK
+                    ikpu = str(row.get(m.ikpu_col, "")).strip() if m.ikpu_col and pd.notna(row.get(m.ikpu_col)) else None
+                    if ikpu and ikpu.endswith(".0"):
+                        ikpu = ikpu[:-2]
 
-                # Unit (O'lchov birligi)
-                unit_val = "dona"
-                if m.unit_col and pd.notna(row.get(m.unit_col)):
-                    u_clean = str(row.get(m.unit_col)).strip()
-                    if u_clean and u_clean.lower() != "nan":
-                        unit_val = u_clean
+                    # Unit (O'lchov birligi)
+                    unit_val = "dona"
+                    if m.unit_col and pd.notna(row.get(m.unit_col)):
+                        u_clean = str(row.get(m.unit_col)).strip()
+                        if u_clean and u_clean.lower() != "nan":
+                            unit_val = u_clean
 
-                # Quantity & Price
-                qty = Decimal("1")
-                qty_src = m.qty_col or m.inflow_qty_col or m.initial_qty_col or m.outflow_qty_col
-                if qty_src:
-                    qty = parse_amount(row.get(qty_src)) or Decimal("1")
+                    # Quantity & Price
+                    qty = Decimal("1")
+                    qty_src = m.qty_col or m.inflow_qty_col or m.initial_qty_col or m.outflow_qty_col
+                    if qty_src:
+                        qty = require_amount(row.get(qty_src), Decimal("1"))
 
-                price = (parse_amount(row.get(m.price_col)) if m.price_col else None) or Decimal("0")
+                    price = (require_amount(row.get(m.price_col), Decimal("0")) if m.price_col else Decimal("0"))
 
-                # Calculate missing total or price
-                if tot <= Decimal("0") and price > Decimal("0") and qty > Decimal("0"):
-                    tot = qty * price
-                elif price <= Decimal("0") and tot > Decimal("0") and qty > Decimal("0"):
-                    price = tot / qty
+                    # Calculate missing total or price
+                    if tot <= Decimal("0") and price > Decimal("0") and qty > Decimal("0"):
+                        tot = qty * price
+                    elif price <= Decimal("0") and tot > Decimal("0") and qty > Decimal("0"):
+                        price = tot / qty
 
-                if tot <= 0 and qty <= 0:
+                    if tot <= 0 and qty <= 0:
+                        continue
+
+                    # Determine doc_type and counterparty
+                    if op_type == "INITIAL_BALANCE":
+                        final_doc_type = "INITIAL_BALANCE"
+                        cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else "Ta'sischi (Boshlang'ich qoldiq)"
+                    elif op_type == "OUTFLOW":
+                        final_doc_type = request.doc_type or "OUTFLOW"
+                        cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else "Xaridor / Aholi"
+                    else:
+                        final_doc_type = request.doc_type or ("SOLIQ_SALES" if is_sales else ("INITIAL_STOCK" if m.initial_qty_col else "EHF"))
+                        cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else ("Aholi" if is_sales else "Yetkazib beruvchi")
+
+                    # Main Transaction
+                    records.append(ParsedDocumentRecord(
+                        doc_number=doc_num,
+                        doc_date=doc_d,
+                        doc_type=final_doc_type,
+                        counterparty_name=cp_name,
+                        counterparty_inn=str(row.get(m.counterparty_inn_col, "")) if m.counterparty_inn_col and pd.notna(row.get(m.counterparty_inn_col)) else None,
+                        item_name=str(row.get(m.item_name_col, "")).strip() if m.item_name_col and pd.notna(row.get(m.item_name_col)) else None,
+                        ikpu_code=ikpu,
+                        package_code=barcode,
+                        unit=unit_val,
+                        quantity=qty,
+                        price=price,
+                        total_amount=tot,
+                        debit_account=default_deb,
+                        credit_account=default_crd,
+                        description=f"{final_doc_type}: {str(row.get(m.item_name_col, ''))[:40]}",
+                        raw_payload={str(k): str(v) for k, v in row.items() if pd.notna(v)}
+                    ))
+
+                    # If there is a return amount
+                    if m.return_sum_col:
+                        ret_sum = require_amount(row.get(m.return_sum_col), Decimal("0"))
+                        if ret_sum > 0:
+                            ret_qty = (require_amount(row.get(m.return_qty_col), Decimal("1")) if m.return_qty_col else Decimal("1"))
+                            records.append(ParsedDocumentRecord(
+                                doc_number=f"RET-{doc_num}",
+                                doc_date=doc_d,
+                                doc_type="RETURN",
+                                counterparty_name="Aholi (Qaytarish)",
+                                item_name=str(row.get(m.item_name_col, "")).strip() if m.item_name_col and pd.notna(row.get(m.item_name_col)) else None,
+                                ikpu_code=ikpu,
+                                package_code=barcode,
+                                quantity=ret_qty,
+                                price=ret_sum / ret_qty if ret_qty > 0 else ret_sum,
+                                total_amount=ret_sum,
+                                debit_account="9000",
+                                credit_account="5000",
+                                description=f"Mahsulot qaytarilishi: {str(row.get(m.item_name_col, ''))[:40]}",
+                                raw_payload={str(k): str(v) for k, v in row.items() if pd.notna(v)}
+                            ))
+                except UnparseableValue as cell_error:
+                    parse_errors.append(f"Ma'lumot qatori {idx + 1}: {cell_error}")
                     continue
-
-                # Determine doc_type and counterparty
-                if op_type == "INITIAL_BALANCE":
-                    final_doc_type = "INITIAL_BALANCE"
-                    cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else "Ta'sischi (Boshlang'ich qoldiq)"
-                elif op_type == "OUTFLOW":
-                    final_doc_type = request.doc_type or "OUTFLOW"
-                    cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else "Xaridor / Aholi"
-                else:
-                    final_doc_type = request.doc_type or ("SOLIQ_SALES" if is_sales else ("INITIAL_STOCK" if m.initial_qty_col else "EHF"))
-                    cp_name = str(row.get(m.counterparty_col, "")).strip() if m.counterparty_col and pd.notna(row.get(m.counterparty_col)) else ("Aholi" if is_sales else "Yetkazib beruvchi")
-
-                # Main Transaction
-                records.append(ParsedDocumentRecord(
-                    doc_number=doc_num,
-                    doc_date=doc_d,
-                    doc_type=final_doc_type,
-                    counterparty_name=cp_name,
-                    counterparty_inn=str(row.get(m.counterparty_inn_col, "")) if m.counterparty_inn_col and pd.notna(row.get(m.counterparty_inn_col)) else None,
-                    item_name=str(row.get(m.item_name_col, "")).strip() if m.item_name_col and pd.notna(row.get(m.item_name_col)) else None,
-                    ikpu_code=ikpu,
-                    package_code=barcode,
-                    unit=unit_val,
-                    quantity=qty,
-                    price=price,
-                    total_amount=tot,
-                    debit_account=default_deb,
-                    credit_account=default_crd,
-                    description=f"{final_doc_type}: {str(row.get(m.item_name_col, ''))[:40]}",
-                    raw_payload={str(k): str(v) for k, v in row.items() if pd.notna(v)}
-                ))
-
-                # If there is a return amount
-                if m.return_sum_col:
-                    ret_sum = parse_amount(row.get(m.return_sum_col)) or Decimal("0")
-                    if ret_sum > 0:
-                        ret_qty = (parse_amount(row.get(m.return_qty_col)) if m.return_qty_col else None) or Decimal("1")
-                        records.append(ParsedDocumentRecord(
-                            doc_number=f"RET-{doc_num}",
-                            doc_date=doc_d,
-                            doc_type="RETURN",
-                            counterparty_name="Aholi (Qaytarish)",
-                            item_name=str(row.get(m.item_name_col, "")).strip() if m.item_name_col and pd.notna(row.get(m.item_name_col)) else None,
-                            ikpu_code=ikpu,
-                            package_code=barcode,
-                            quantity=ret_qty,
-                            price=ret_sum / ret_qty if ret_qty > 0 else ret_sum,
-                            total_amount=ret_sum,
-                            debit_account="9000",
-                            credit_account="5000",
-                            description=f"Mahsulot qaytarilishi: {str(row.get(m.item_name_col, ''))[:40]}",
-                            raw_payload={str(k): str(v) for k, v in row.items() if pd.notna(v)}
-                        ))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Faylni o'qishda xatolik yuz berdi: {str(e)}")
 
@@ -335,7 +350,7 @@ async def execute_document_import(
         task_info.update_progress(25, f"{total_records} ta amal aniqlandi. Kontragentlar va tovarlar solishtirilmoqda...", total_items=total_records)
 
     imported_count = 0
-    errors: List[str] = []
+    errors: List[str] = list(parse_errors)
 
     # In-memory caches to avoid N roundtrips for large batches (e.g. 1000+ rows)
     cps_res = await db.execute(select(Counterparty).where(Counterparty.organization_id == org.id))
@@ -452,7 +467,12 @@ async def execute_document_import(
         details=f"{imported_count} ta buxgalteriya amali ({request.format_type}) bazaga kiritildi."
     )
     db.add(audit_entry)
-    await db.commit()
+    await record_import(
+        db, org.id, filename=request.file_id, document_type=request.format_type, digest=digest,
+        rows_committed=imported_count, metadata={"errors": len(errors), "performed_by": performed_by},
+        allow_duplicate=request.allow_duplicate,
+    )
+    await commit_or_conflict(db)
 
     response_payload = CommitResponse(
         success=True,
@@ -501,6 +521,7 @@ async def commit_document_async(
     """
     await ensure_org_access(db, current_user, request.organization_id)
     file_path = _existing_upload_path(request.file_id)
+    await ensure_not_duplicate(db, request.organization_id, file_sha256(file_path), request.allow_duplicate)
 
     task_info = task_manager.create_task(
         f"Hujjat importi ({request.format_type}): {request.file_id}", owner_id=str(current_user.id)

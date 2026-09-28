@@ -45,6 +45,8 @@ class MaterialReportItem(BaseModel):
     avg_price: Decimal = Decimal("0.00")
     final_qty: Decimal = Decimal("0.000")
     final_sum: Decimal = Decimal("0.00")
+    # True when issues exceed receipts at some point (missing inflow documents)
+    has_negative_stock: bool = False
 
 class MaterialReportMxikGroup(BaseModel):
     ikpu_code: str
