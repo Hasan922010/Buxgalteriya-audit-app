@@ -21,15 +21,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"  # same as backend/Dockerfile and local .venv
           cache: "pip"
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install Dependencies
+        # No fallback: a broken requirements.txt must fail the build, not be masked
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || pip install pytest pytest-asyncio httpx sqlalchemy pydantic fastapi pandas openpyxl reportlab
+          pip install -r requirements.txt
 
       - name: Run Pytest Suite
+        # tests/conftest.py forces an isolated temporary SQLite database and a test SECRET_KEY
         run: |
           pytest tests/ -v --tb=short
 

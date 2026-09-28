@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, engine, Base
@@ -23,8 +25,10 @@ async def lifespan(app: FastAPI):
         async with AsyncSessionLocal() as session:
             await bootstrap_admin_if_needed(session)
         logger.info("Database initialized successfully.")
-    except Exception as e:
-        logger.error(f"Error during startup database seed: {e}")
+    except Exception:
+        # Fail fast: an app that cannot reach / initialize its database must not report itself healthy
+        logger.exception("Startup database initialization failed")
+        raise
     yield
     # Shutdown
     logger.info("Shutting down database connection engine...")
@@ -53,12 +57,14 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    return {
-        "status": "healthy",
-        "service": settings.PROJECT_NAME,
-        "environment": settings.ENVIRONMENT,
-        "db_port": settings.POSTGRES_PORT
-    }
+    """Liveness + database connectivity. Public, so it exposes no infrastructure details."""
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("Health check: database unreachable")
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "unreachable"})
+    return {"status": "healthy", "database": "ok"}
 
 @app.get("/", tags=["Root"])
 async def root():

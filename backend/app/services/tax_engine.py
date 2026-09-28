@@ -24,6 +24,13 @@ class TaxRateRule:
 # Historical and current Uzbekistan VAT (Qo'shilgan qiymat solig'i - QQS) matrix
 UZBEKISTAN_VAT_RULES: List[TaxRateRule] = [
     TaxRateRule(
+        rate=Decimal("0.20"),
+        start_date=date(1992, 1, 1),
+        end_date=date(2019, 9, 30),
+        name="QQS 20% (2019-yil 1-oktyabrgacha)",
+        legal_basis="O'zbekiston Respublikasi Soliq Kodeksi (2019-yil 1-oktyabrgacha amalda)"
+    ),
+    TaxRateRule(
         rate=Decimal("0.15"),
         start_date=date(2019, 10, 1),
         end_date=date(2022, 12, 31),

@@ -7,14 +7,15 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_password}
-      POSTGRES_DB: ${POSTGRES_DB:-buxgalter_db}
+      # No default password: must be set in .env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-yordamchi_buxgalter}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # not exposed to the network
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -24,7 +25,7 @@ services:
     container_name: yordamchi_redis
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   backend:
     build:
@@ -37,6 +38,14 @@ services:
         condition: service_healthy
     env_file:
       - .env
+    environment:
+      # Inside the compose network the database is the `postgres` service on 5432,
+      # not the localhost:5433 used for local (non-docker) development in .env
+      POSTGRES_SERVER: postgres
+      POSTGRES_PORT: "5432"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-yordamchi_buxgalter}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-yordamchi_buxgalter}
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:

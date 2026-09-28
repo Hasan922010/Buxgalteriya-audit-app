@@ -242,6 +242,20 @@ Tekshiruv: 193 backend test o'tdi. Ular orasida barcha endpoint'lar tokensiz 401
 
 Testlar: 223 ta, hammasi o'tadi.
 
+### 4-bosqich (2026-09-28, qisman)
+
+| Topilma | Holat | Nima qilindi |
+|---|---|---|
+| M4 migratsiyalar | ✅ | `002_auth_audit_ingestion` migratsiyasi qo'shildi: `audit_logs`, `document_ingestion_logs` (+ `file_sha256` va unique indeks), `users`, `user_organizations`. U idempotent, shuning uchun ham bo'sh bazada, ham `create_all` bilan yaratilgan bazada ishlaydi (ikkalasi test bilan tekshirilgan). Dev Postgres bazasi `002` (head) versiyasiga ko'tarildi |
+| M5 startup xatosi yutilardi | ✅ | DB ishga tushmasa, ilova ham ishga tushmaydi. `/health` endi DB'ni `SELECT 1` bilan tekshiradi (ishlamasa 503) va port kabi ichki ma'lumotlarni oshkor qilmaydi |
+| M7 docker-compose | ✅ | Backend konteyner ichidan DB'ga `postgres:5432` orqali ulanadi. Standart parol yo'q (u `.env` da bo'lishi shart), DB va Redis portlari faqat `127.0.0.1` ga ochiladi. Docker o'rnatilmagani uchun faqat YAML sintaksisi tekshirildi |
+| M8 CI | ✅ | O'rnatish xatosini yashiradigan fallback olib tashlandi, Python 3.13 ga ko'tarildi, pip keshi `backend/requirements.txt` ga yo'naltirildi (oldin fayl topilmay, CI yiqilishi mumkin edi) |
+| LOW: 2019-10-01 gacha QQS 20% | ✅ | `TaxEngine` ga qo'shildi |
+| M3 `backend/app/tests` | ⏳ | O'chirish buyrug'ini GateGuard hook'i blokladi. Qo'lda o'chiring: `git rm -r backend/app/tests`. **Muhim:** undagi conftest'da izolyatsiya yo'q, uni ishga tushirish dev bazani tozalab yuboradi |
+| H8 Next.js yangilash, M1/M2 o'lik kod va parserlar takrorlanishi, M9 katta fayllar | ⏳ | Hali qilinmagan |
+
+Testlar: 232 ta, hammasi o'tadi.
+
 ## Tuzatish yo'l xaritasi
 
 **1-bosqich — Bloklovchi xatolar (1–2 kun)**
