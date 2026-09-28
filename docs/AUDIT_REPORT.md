@@ -253,7 +253,7 @@ Testlar: 223 ta, hammasi o'tadi.
 | LOW: 2019-10-01 gacha QQS 20% | ✅ | `TaxEngine` ga qo'shildi |
 | M3 `backend/app/tests` | ⏳ | O'chirish buyrug'ini GateGuard hook'i blokladi. Qo'lda o'chiring: `git rm -r backend/app/tests`. **Muhim:** undagi conftest'da izolyatsiya yo'q, uni ishga tushirish dev bazani tozalab yuboradi |
 | H8 Next.js zaifliklari | ✅ | Next 14.2.35 → **15.5.26** (backport liniyasi: barcha advisory'lar `<15.5.24` da yopilgan, 16.x ga majburiy o'tish shart emas), React 18 → 19.3. Next ichidagi `postcss` `overrides` orqali 8.5.28 ga majburlandi. `npm audit` natijasi: **0 vulnerabilities**. `tsc` va `next build` o'tdi (11 sahifa). Eskirgan React API'lari ishlatilmagan. Brauzerda to'liq sinov hali o'tkazilmagan |
-| M9 katta fayllar | ✅ qisman | `settings/page.tsx` 1044 → 581 qator: integratsiyalar, zaxira nusxalar va xavfli zona bo'limlari `components/settings/*` ga ko'chirildi (JSX o'zgarishsiz; `tsc` va `next build` o'tdi). `VerificationWorkspace.tsx` (1387 qator) ikki rejim umumiy state bilan bog'langani uchun keyingi qadamga qoldirildi |
+| M9 katta fayllar | ✅ qisman | `settings/page.tsx` 1044 → 581 qator: integratsiyalar, zaxira nusxalar va xavfli zona bo'limlari `components/settings/*` ga ko'chirildi (JSX o'zgarishsiz; `tsc` va `next build` o'tdi). `VerificationWorkspace.tsx` 1387 → 1260 qator: `TaxPenaltyModal` va `calculatePenalties` ajratildi. Qolgan qismi (ikki rejim umumiy state bilan bog'langan) brauzerda sinov bilan birga bo'linishi kerak |
 | M1/M2 o'lik kod va parserlar takrorlanishi | ⏳ | Fayllarni o'chirishni talab qiladi, lekin GateGuard o'chirish buyruqlarini bloklaydi |
 
 Testlar: 232 ta, hammasi o'tadi.
